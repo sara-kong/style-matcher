@@ -12,3 +12,4 @@ ranked.html
 *.png
 __pycache__/
 .DS_Store
+feeds/
