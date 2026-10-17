@@ -1,0 +1,14 @@
+.venv/
+catalog/
+style/
+style_cropped/
+candidates/
+logs/
+*.joblib
+report.html
+clusters.html
+learn.html
+ranked.html
+*.png
+__pycache__/
+.DS_Store
