@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --ink: #2b2a33; --paper: #fdfdfb; --keep: #41583a; --muted: #6d6b75; --line: rgba(43,42,51,.14); }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #ecebef; --paper: #1d1c22; --keep: #7fa071; --muted: #a3a1ab; --line: rgba(236,235,239,.16); }
+  }
+  body { margin: 0; width: 270px; background: var(--paper); color: var(--ink);
+         font: 13px/1.45 "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  main { padding: 16px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
+  #status { color: var(--muted); margin: 0 0 14px; }
+  #status.ok::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+                       background: var(--keep); margin-right: 6px; vertical-align: 1px; }
+  dl { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin: 0 0 14px; }
+  dt { color: var(--muted); } dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  label.switch { display: flex; justify-content: space-between; align-items: center; padding: 10px 0;
+                 border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+  button { width: 100%; padding: 9px; border: 0; border-radius: 8px; cursor: pointer; font: 600 13px/1 inherit;
+           font-family: inherit; background: var(--keep); color: #fff; }
+  button:disabled { opacity: .55; cursor: default; }
+  button:focus-visible, input:focus-visible { outline: 2px solid #4a7bd0; outline-offset: 2px; }
+  #note { color: var(--muted); font-size: 12px; margin: 10px 0 0; min-height: 1em; }
+  code { font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Taste Score</h1>
+  <p id="status">Checking the scoring server…</p>
+  <dl id="stats" hidden>
+    <dt>Liked</dt><dd id="like">–</dd>
+    <dt>Disliked</dt><dd id="dislike">–</dd>
+    <dt>Maybe</dt><dd id="maybe">–</dd>
+    <dt>Cutoff</dt><dd id="cutoff">–</dd>
+    <dt>Held-out AUC</dt><dd id="auc">–</dd>
+  </dl>
+  <label class="switch">Score images on pages <input type="checkbox" id="enabled"></label>
+  <button id="retrain" disabled>Retrain with new labels</button>
+  <p id="note"></p>
+</main>
+<script src="popup.js"></script>
+</body>
+</html>
