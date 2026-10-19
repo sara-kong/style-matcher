@@ -59,34 +59,39 @@
   const host = document.createElement("div");
   host.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483646;";
   const root = host.attachShadow({ mode: "open" });
+  // Inter ships with the extension. Fonts load at the document level, so the face is declared there
+  // under its own name (it won't clash with a site's own Inter); the tags fall back to the system font
+  // if a site's security policy blocks it.
+  const fontFace = document.createElement("style");
+  fontFace.textContent = `@font-face { font-family: "Taste Score Inter"; font-weight: 100 900;
+    font-display: swap; src: url("${chrome.runtime.getURL("fonts/inter-latin.woff2")}") format("woff2"); }`;
+  document.documentElement.appendChild(fontFace);
+
   root.innerHTML = `<style>
     :host { all: initial; }
     .tag {
-      --ink: #2b2a33; --paper: #fdfdfb; --keep: #41583a; --line: rgba(43,42,51,.18);
+      --rose: #b89393; --rose-2: #c0a5a5; --mist: #dcd5d5; --paper: #f2f2f2; --ink: #4a3d3d;
       position: fixed; pointer-events: auto; display: flex; align-items: center; gap: 6px;
-      padding: 5px 9px 5px 7px; border-radius: 3px 10px 10px 3px;
-      background: var(--paper); color: var(--ink); border: 1px solid var(--line);
-      font: 600 12px/1 "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif;
-      font-variant-numeric: tabular-nums; letter-spacing: .01em;
-      box-shadow: 0 1px 2px rgba(0,0,0,.18);
+      height: 23px; box-sizing: border-box; padding: 0 10px; border-radius: 5px;
+      background: var(--mist); color: #fff;
+      font: 600 10px/1 "Taste Score Inter", Inter, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      font-variant-numeric: tabular-nums;
+      filter: drop-shadow(0 2px 2px rgba(184, 147, 147, .25));
     }
-    .tag::before {  /* the punched hole of a hang tag */
-      content: ""; width: 6px; height: 6px; border-radius: 50%;
-      background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; opacity: .55;
-    }
-    .tag.keep { background: var(--keep); color: #fff; border-color: transparent; }
+    .tag.keep { background: var(--rose); }
+    .tag.owned { background: var(--paper); color: var(--ink); box-shadow: inset 0 0 0 1px var(--mist); }
     .tag.done { font-weight: 500; }
-    .tag.owned { background: #ece8e1; color: var(--ink); border-color: rgba(43,42,51,.28); }
-    .note { font-weight: 500; font-size: 11px; opacity: .85; padding-left: 6px;
-            border-left: 1px solid currentColor; }
-    .actions { display: none; gap: 2px; margin-left: 2px; }
+    .note { font-weight: 500; padding-left: 6px; border-left: 1px solid currentColor; opacity: .9; }
+    .actions { display: none; gap: 2px; margin-right: -6px; }
     .tag:hover .actions, .tag:focus-within .actions { display: flex; }
     button {
-      all: unset; cursor: pointer; padding: 3px 6px; border-radius: 6px;
-      font: 500 11px/1 "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif;
-      color: inherit; background: rgba(127,127,127,.14);
+      all: unset; cursor: pointer; height: 15px; padding: 0 8px; border-radius: 5px;
+      display: inline-flex; align-items: center;
+      font: 600 8px/1 "Taste Score Inter", Inter, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      color: #fff; background: var(--rose-2); white-space: nowrap;
     }
-    button:hover { background: rgba(127,127,127,.28); }
+    .tag.owned button { background: var(--rose); }
+    button:hover { background: #a98282; }
     button:focus-visible { outline: 2px solid #4a7bd0; outline-offset: 1px; }
   </style>`;
   document.documentElement.appendChild(host);
@@ -205,7 +210,7 @@
     // Fade images below the cutoff; outline the ones worth a look.
     if (!dimmed.has(img)) dimmed.set(img, { opacity: img.style.opacity, outline: img.style.outline, offset: img.style.outlineOffset });
     img.style.opacity = keep ? "" : "0.35";
-    img.style.outline = keep ? "3px solid #41583a" : "";
+    img.style.outline = keep ? "3px solid #b89393" : "";
     img.style.outlineOffset = keep ? "-3px" : "";
     place();
   }

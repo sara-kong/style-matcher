@@ -1,9 +1,14 @@
 const $ = (id) => document.getElementById(id);
 const send = (msg) => new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
 
+function setStatus(text, cls = "") {
+  $("status-text").textContent = text;
+  $("status").className = cls;
+}
+
 function show(data) {
-  $("status").textContent = data.ready ? "Scoring server running" : "Server running, model not trained yet";
-  $("status").className = data.ready ? "ok" : "";
+  setStatus(data.ready ? "Scoring server running" : "Server running, model not trained yet", data.ready ? "ok" : "");
+  $("help").hidden = true;
   $("stats").hidden = false;
   for (const k of ["like", "dislike", "maybe"]) $(k).textContent = data.counts?.[k] ?? "–";
   $("cutoff").textContent = data.cutoff != null ? data.cutoff.toFixed(2) : "–";
@@ -14,7 +19,10 @@ function show(data) {
 async function refresh() {
   const res = await send({ type: "status" });
   if (res?.ok) return show(res.data);
-  $("status").innerHTML = "Scoring server isn't running. In Terminal, run <code>python server.py</code> in your style-matcher folder.";
+  setStatus("Scoring server isn’t running");
+  $("help").innerHTML = "Start it in Terminal:<br><code>launchctl kickstart -k gui/$(id -u)/com.sarakong.tastescore</code>";
+  $("help").hidden = false;
+  $("stats").hidden = true;
   $("retrain").disabled = true;
 }
 
@@ -23,11 +31,12 @@ $("enabled").addEventListener("change", (e) => chrome.storage.local.set({ enable
 
 $("retrain").addEventListener("click", async () => {
   $("retrain").disabled = true;
-  $("note").textContent = "Retraining…";
+  setStatus("Retraining…", "ok busy");
+  $("note").textContent = "";
   const res = await send({ type: "retrain" });
-  if (!res?.ok) { $("note").textContent = res?.error || "Retraining failed."; $("retrain").disabled = false; return; }
+  if (!res?.ok) { $("note").textContent = res?.error || "Retraining failed."; await refresh(); return; }
   show(res.data);
-  $("note").textContent = `Retrained in ${res.data.seconds}s. Rescoring this page.`;
+  $("note").textContent = `Retrained in ${res.data.seconds}s · rescoring this page`;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: "rescore" }).catch(() => {});
 });
