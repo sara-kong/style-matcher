@@ -33,7 +33,7 @@ from PIL import Image
 from pydantic import BaseModel
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.model_selection import StratifiedKFold
 from transformers import CLIPModel, CLIPProcessor
 
 from style_match import DEVICE, ROOT, as_tensor, list_images
@@ -45,6 +45,7 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 CACHE_FILE = ROOT / ".embedding_cache.joblib"
 LOG_FILE = ROOT / "logs" / "events.jsonl"
 LABELS = ("like", "dislike", "maybe")
+STRONG_WEIGHT = 3.0  # how much a purchase or a return counts compared with a like or dislike
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                          "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
 
@@ -114,18 +115,26 @@ def classifier():
 
 
 def train():
-    liked, disliked = list_images("catalog/like"), list_images("catalog/dislike")
-    state["counts"] = {"like": len(liked), "dislike": len(disliked),
-                       "maybe": len(list_images("catalog/maybe"))}
-    if len(liked) < 5 or len(disliked) < 5:
+    """Fit the taste model. Purchases count as strong yeses and returns as strong nos."""
+    groups = {name: list_images(f"catalog/{name}") for name in ("like", "dislike", "purchased", "returned")}
+    state["counts"] = {k: len(v) for k, v in groups.items()}
+    state["counts"]["maybe"] = len(list_images("catalog/maybe"))
+    positives = groups["like"] + groups["purchased"]
+    negatives = groups["dislike"] + groups["returned"]
+    if len(positives) < 5 or len(negatives) < 5:
         state["clf"] = None
         print("Need at least 5 liked and 5 disliked images to train.")
         return
-    X = embed_files(liked + disliked)
-    y = np.array([1] * len(liked) + [0] * len(disliked))
+    paths = positives + negatives
+    X = embed_files(paths)
+    y = np.array([1] * len(positives) + [0] * len(negatives))
+    strong = set(groups["purchased"]) | set(groups["returned"])
+    w = np.array([STRONG_WEIGHT if p in strong else 1.0 for p in paths])
 
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
-    oof = cross_val_predict(classifier(), X, y, cv=cv, method="predict_proba")[:, 1]
+    # Held-out predictions: each item scored by a model trained without it.
+    oof = np.zeros(len(y))
+    for tr, te in StratifiedKFold(n_splits=5, shuffle=True, random_state=0).split(X, y):
+        oof[te] = classifier().fit(X[tr], y[tr], sample_weight=w[tr]).predict_proba(X[te])[:, 1]
     cutoff = FALLBACK_CUTOFF
     for t in np.sort(np.unique(oof)):  # lowest cutoff with >= TARGET_PRECISION on held-out items
         above = oof >= t
@@ -133,11 +142,12 @@ def train():
             cutoff = float(t)
             break
 
-    state.update(clf=classifier().fit(X, y), cutoff=cutoff, auc=float(roc_auc_score(y, oof)),
-                 version=state["version"] + 1)
+    state.update(clf=classifier().fit(X, y, sample_weight=w), cutoff=cutoff,
+                 auc=float(roc_auc_score(y, oof)), version=state["version"] + 1)
     log("retrain", version=state["version"], auc=round(state["auc"], 4), cutoff=round(cutoff, 4),
-        counts=state["counts"])
-    print(f"Trained on {len(liked)} liked / {len(disliked)} disliked. "
+        counts=state["counts"], strong_weight=STRONG_WEIGHT)
+    print(f"Trained on {len(positives)} yes ({len(groups['purchased'])} purchased) / "
+          f"{len(negatives)} no ({len(groups['returned'])} returned). "
           f"Held-out AUC {state['auc']:.2f}, cutoff {cutoff:.2f}")
 
 

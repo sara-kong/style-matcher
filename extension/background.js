@@ -55,6 +55,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     label: () => label(msg.url, msg.label, msg.page),
     retrain: () => call("/retrain", {}),
     status: () => call("/status"),
+    fetchImage: async () => ({ data: await toDataUrl(msg.url) }),
   };
   const run = routes[msg.type];
   if (!run) return false;

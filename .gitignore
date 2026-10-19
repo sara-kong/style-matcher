@@ -13,3 +13,6 @@ ranked.html
 __pycache__/
 .DS_Store
 feeds/
+credentials.json
+token.json
+purchases/

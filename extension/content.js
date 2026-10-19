@@ -4,6 +4,21 @@
   if (window.__tasteScore) return;
   window.__tasteScore = true;
 
+  // On the purchase review page (purchases.py), act only as a helper that fetches photos
+  // through the extension, which stores like Aritzia accept. No tags are drawn there.
+  if (location.origin === "http://127.0.0.1:8001") {
+    document.documentElement.dataset.tasteBridge = "1";
+    addEventListener("message", (e) => {
+      if (e.source !== window || e.data?.type !== "taste-fetch-image") return;
+      const reply = (data) => postMessage({ type: "taste-image", id: e.data.id, data }, location.origin);
+      try {
+        chrome.runtime.sendMessage({ type: "fetchImage", url: e.data.url },
+          (res) => reply(!chrome.runtime.lastError && res?.ok ? res.data.data : null));
+      } catch { reply(null); }
+    });
+    return;
+  }
+
   const MIN_SIZE = 120;     // ignore icons, logos and thumbnails smaller than this (px)
   const BATCH_DELAY = 300;  // wait this long to collect images before asking the server
   const BATCH_MAX = 40;
