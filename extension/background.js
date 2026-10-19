@@ -40,7 +40,7 @@ async function score(urls, page) {
     try { return { url, data: await toDataUrl(url) }; } catch { return { url }; }
   }));
   const second = await call("/score", { items, page, download: true });
-  return { scores: { ...first.scores, ...second.scores }, cutoff: second.cutoff };
+  return { ...second, scores: { ...first.scores, ...second.scores }, nearest: { ...first.nearest, ...second.nearest } };
 }
 
 async function label(url, value, page) {

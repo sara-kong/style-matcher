@@ -44,8 +44,12 @@ FALLBACK_CUTOFF = 0.5
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 CACHE_FILE = ROOT / ".embedding_cache.joblib"
 LOG_FILE = ROOT / "logs" / "events.jsonl"
-LABELS = ("like", "dislike", "maybe")
+# Buttons on the tags -> catalog folder. "I own this" adds the photo to your wardrobe (and counts as a yes).
+LABEL_FOLDERS = {"like": "like", "dislike": "dislike", "maybe": "maybe", "owned": "purchased"}
 STRONG_WEIGHT = 1.0  # how much a purchase or a return counts compared with a like or dislike
+# Wardrobe check: similarity (0-1) to the closest thing you own. Tune these on items you know you own.
+OWN_THRESHOLD = 0.88      # at or above: "You own this"
+SIMILAR_THRESHOLD = 0.80  # at or above: "Similar to something you own"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                          "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
 
@@ -54,7 +58,7 @@ clip = CLIPModel.from_pretrained(MODEL_ID).to(DEVICE).eval()
 processor = CLIPProcessor.from_pretrained(MODEL_ID)
 lock = threading.Lock()  # one model, one request at a time
 
-state = {"clf": None, "cutoff": FALLBACK_CUTOFF, "auc": None, "counts": {}, "version": 0}
+state = {"clf": None, "cutoff": FALLBACK_CUTOFF, "auc": None, "counts": {}, "version": 0, "wardrobe": None}
 last_score = {}   # url -> (score, cutoff, model version) as last shown to you
 logged = set()    # (url, model version) pairs already logged, so each score is logged once
 
@@ -116,10 +120,14 @@ def classifier():
 
 def train():
     """Fit the taste model. Purchases count as strong yeses and returns as strong nos."""
-    groups = {name: list_images(f"catalog/{name}") for name in ("like", "dislike", "purchased", "returned")}
+    # catalog/returned = returned because "not my style" (a real no).
+    # catalog/returned_need = loved it but didn't need it (still a yes for taste).
+    # catalog/returned_fit = fit or quality problem: says nothing about taste, so it's left out.
+    names = ("like", "dislike", "purchased", "returned", "returned_need", "returned_fit", "maybe")
+    groups = {name: list_images(f"catalog/{name}") for name in names}
     state["counts"] = {k: len(v) for k, v in groups.items()}
-    state["counts"]["maybe"] = len(list_images("catalog/maybe"))
-    positives = groups["like"] + groups["purchased"]
+    state["wardrobe"] = embed_files(groups["purchased"]) if groups["purchased"] else None
+    positives = groups["like"] + groups["purchased"] + groups["returned_need"]
     negatives = groups["dislike"] + groups["returned"]
     if len(positives) < 5 or len(negatives) < 5:
         state["clf"] = None
@@ -180,8 +188,8 @@ def load_image(url, data, page):
 
 @app.get("/status")
 def status():
-    return {"ready": state["clf"] is not None, "cutoff": state["cutoff"],
-            "auc": state["auc"], "counts": state["counts"]}
+    return {"ready": state["clf"] is not None, "cutoff": state["cutoff"], "auc": state["auc"],
+            "counts": state["counts"], "wardrobe": 0 if state["wardrobe"] is None else len(state["wardrobe"])}
 
 
 @app.post("/score")
@@ -206,39 +214,50 @@ def score(req: ScoreRequest):
             for u, v in zip(todo, embed(images)):
                 url_vectors[u] = v
         known = [i.url for i in items if i.url in url_vectors]
+        nearest = {}
         scores = {}
         if known:
             proba = state["clf"].predict_proba(np.stack([url_vectors[u] for u in known]))[:, 1]
             scores = {u: round(float(p), 3) for u, p in zip(known, proba)}
+            if state["wardrobe"] is not None:  # similarity to the closest thing you own
+                sims = np.stack([url_vectors[u] for u in known]) @ state["wardrobe"].T
+                nearest = {u: round(float(v), 3) for u, v in zip(known, sims.max(axis=1))}
     for u, sc in scores.items():
         last_score[u] = (sc, state["cutoff"], state["version"])
         if (u, state["version"]) not in logged:
             logged.add((u, state["version"]))
-            log("score", url=u[:300], site=host(req.page), score=sc,
+            log("score", url=u[:300], site=host(req.page), score=sc, owned_sim=nearest.get(u),
                 cutoff=round(state["cutoff"], 4), version=state["version"])
-    return {"scores": scores, "missing": missing, "cutoff": state["cutoff"]}
+    return {"scores": scores, "nearest": nearest, "missing": missing, "cutoff": state["cutoff"],
+            "own_threshold": OWN_THRESHOLD, "similar_threshold": SIMILAR_THRESHOLD}
 
 
 @app.post("/label")
 def label(req: LabelRequest):
-    if req.label not in LABELS:
-        raise HTTPException(400, f"label must be one of {LABELS}")
+    if req.label not in LABEL_FOLDERS:
+        raise HTTPException(400, f"label must be one of {tuple(LABEL_FOLDERS)}")
     try:
         img = load_image(req.url, req.data, req.page)
     except Exception as e:
         raise HTTPException(422, f"Couldn't download that image: {e}")
     name = "web_" + hashlib.sha1(req.url.encode()).hexdigest()[:16] + ".jpg"
-    for other in LABELS:  # relabeling moves the image rather than duplicating it
-        (ROOT / "catalog" / other / name).unlink(missing_ok=True)
-    dest = ROOT / "catalog" / req.label
+    for folder in LABEL_FOLDERS.values():  # relabeling moves the image rather than duplicating it
+        (ROOT / "catalog" / folder / name).unlink(missing_ok=True)
+    folder = LABEL_FOLDERS[req.label]
+    dest = ROOT / "catalog" / folder
     dest.mkdir(parents=True, exist_ok=True)
     img.save(dest / name, "JPEG", quality=92)
-    state["counts"] = {k: len(list_images(f"catalog/{k}")) for k in LABELS}
+    for f in LABEL_FOLDERS.values():
+        state["counts"][f] = len(list_images(f"catalog/{f}"))
+    if req.label == "owned":  # add it to the wardrobe right away, no retrain needed
+        with lock:
+            v = embed([img])[0][None, :]
+            state["wardrobe"] = v if state["wardrobe"] is None else np.vstack([state["wardrobe"], v])
     shown = last_score.get(req.url)
     log("label", url=req.url[:300], site=host(req.page), label=req.label,
         score=shown[0] if shown else None, cutoff=round(shown[1], 4) if shown else None,
         version=shown[2] if shown else None)
-    return {"saved": f"catalog/{req.label}/{name}", "counts": state["counts"]}
+    return {"saved": f"catalog/{folder}/{name}", "counts": state["counts"]}
 
 
 @app.post("/retrain")

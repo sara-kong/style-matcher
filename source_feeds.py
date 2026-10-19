@@ -24,6 +24,7 @@ BRANDS = {
 }
 SERVER = "http://127.0.0.1:8000"
 MAX_PAGES = 4          # 250 products per page
+MAX_DIGEST = 10        # show at most this many items, however many stores you add
 IMAGE_WIDTH = 600      # Shopify's image CDN resizes on request
 ROOT = Path(__file__).resolve().parent
 FEEDS = ROOT / "feeds"
@@ -68,7 +69,7 @@ def fetch_products(brand, base):
 
 
 def score(products):
-    scores, cutoff = {}, None
+    scores, nearest, cutoff, own_t, similar_t = {}, {}, None, None, None
     for i in range(0, len(products), 40):
         chunk = products[i:i + 40]
         r = requests.post(f"{SERVER}/score", timeout=300, json={
@@ -78,8 +79,13 @@ def score(products):
         r.raise_for_status()
         data = r.json()
         scores.update(data["scores"])
-        cutoff = data["cutoff"]
+        nearest.update(data.get("nearest", {}))
+        cutoff, own_t, similar_t = data["cutoff"], data.get("own_threshold"), data.get("similar_threshold")
         print(f"  scored {min(i + 40, len(products))}/{len(products)}")
+    for p in products:  # wardrobe check: how close is it to something you own?
+        near = nearest.get(p["image"])
+        p["owned"] = "own" if near is not None and own_t and near >= own_t else \
+                     "similar" if near is not None and similar_t and near >= similar_t else None
     return scores, cutoff
 
 
@@ -89,6 +95,7 @@ def card(p):
     return f"""<article class="card">
   <a href="{html.escape(p['link'])}" target="_blank" rel="noopener"><img src="{html.escape(p['image'])}" alt="{html.escape(p['title'])}" loading="lazy"></a>
   <div class="meta"><span class="score">{round(s * 100)}</span><span class="brand">{html.escape(p['brand'])}{html.escape(price)}</span></div>
+  {'<p class="owned">Similar to something you own</p>' if p.get("owned") == "similar" else ''}
   <h2><a href="{html.escape(p['link'])}" target="_blank" rel="noopener">{html.escape(p['title'])}</a></h2>
   <div class="actions" data-url="{html.escape(p['image'])}" data-page="{html.escape(p['link'])}">
     <button data-label="like">Like</button><button data-label="maybe">Maybe</button><button data-label="dislike">Dislike</button>
@@ -96,7 +103,7 @@ def card(p):
 </article>"""
 
 
-def write_digest(keep, below, total_new, cutoff, errors):
+def write_digest(keep, below, total_new, cutoff, errors, passed=None):
     notes = "".join(f"<p class='note'>{html.escape(e)}</p>" for e in errors)
     body = "".join(card(p) for p in keep) or "<p class='empty'>Nothing new passed your cutoff today.</p>"
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -114,6 +121,7 @@ def write_digest(keep, below, total_new, cutoff, errors):
   .meta {{ display:flex; gap:8px; align-items:center; margin:10px 0 2px; font-size:13px; color:var(--muted); }}
   .score {{ background:var(--keep); color:#fff; font-weight:600; font-variant-numeric:tabular-nums; padding:2px 7px; border-radius:3px 9px 9px 3px; }}
   h2 {{ font-size:14px; font-weight:500; margin:0 0 8px; }}
+  .owned {{ font-size:12px; font-weight:600; color:#8a4b3a; margin:0 0 4px; }}
   h2 a {{ color:inherit; text-decoration:none; }}
   .actions {{ display:flex; gap:6px; }}
   button {{ font:inherit; font-size:12px; padding:5px 9px; border-radius:7px; border:1px solid var(--line); background:transparent; color:var(--ink); cursor:pointer; }}
@@ -122,7 +130,7 @@ def write_digest(keep, below, total_new, cutoff, errors):
   button:focus-visible {{ outline:2px solid #4a7bd0; outline-offset:2px; }}
 </style></head><body><main>
 <h1>New arrivals worth a look</h1>
-<p class="sub">{date.today():%A, %B %-d} · {len(keep)} of {total_new} new products passed your cutoff ({cutoff:.2f}); {below} didn’t.</p>
+<p class="sub">{date.today():%A, %B %-d} · the top {len(keep)} of {passed if passed is not None else len(keep)} new products that passed your cutoff ({cutoff:.2f}), out of {total_new} new; {below} didn’t pass.</p>
 {notes}
 <div class="grid">{body}</div>
 </main>
@@ -166,13 +174,15 @@ def main():
 
     scores, cutoff = score(new)
     scored = [dict(p, score=scores[p["image"]]) for p in new if p["image"] in scores]
-    keep = sorted((p for p in scored if p["score"] >= cutoff), key=lambda p: -p["score"])
+    passed = sorted((p for p in scored if p["score"] >= cutoff and p.get("owned") != "own"), key=lambda p: -p["score"])
+    keep = passed[:MAX_DIGEST]
     for p in scored:  # only mark as seen once scored, so failures get retried next run
         seen[p["key"]] = str(date.today())
     SEEN_FILE.write_text(json.dumps(seen, indent=0))
 
-    write_digest(keep, len(scored) - len(keep), len(scored), cutoff, errors)
-    print(f"\n{len(keep)} of {len(scored)} new products passed the cutoff. Open feeds/digest.html")
+    write_digest(keep, len(scored) - len(passed), len(scored), cutoff, errors, len(passed))
+    print(f"\n{len(passed)} of {len(scored)} new products passed the cutoff; showing the top {len(keep)}. "
+          "Open feeds/digest.html")
 
 
 if __name__ == "__main__":

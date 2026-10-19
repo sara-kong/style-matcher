@@ -229,7 +229,11 @@ def review():
         return
 
     app = FastAPI()
-    folders = {"purchased": "catalog/purchased", "returned": "catalog/returned"}
+    # A return only counts against your taste if it wasn't your style.
+    folders = {"purchased": "catalog/purchased",
+               "returned_style": "catalog/returned",       # not my style: a real "no"
+               "returned_fit": "catalog/returned_fit",     # fit or quality: not a taste signal
+               "returned_need": "catalog/returned_need"}   # loved it, didn't need it: still a "yes"
 
     class Decision(BaseModel):
         id: str
@@ -239,7 +243,7 @@ def review():
     @app.post("/decide")
     def decide(d: Decision):
         c = candidates.get(d.id)
-        if not c or d.decision not in ("purchased", "returned", "skip"):
+        if not c or d.decision not in (*folders, "skip"):
             raise HTTPException(400, "unknown item or decision")
         name = f"mail_{c['id']}.jpg"
         for folder in folders.values():  # changing your mind moves the photo instead of copying it
@@ -252,8 +256,8 @@ def review():
             dest = ROOT / folders[d.decision]
             dest.mkdir(parents=True, exist_ok=True)
             img.save(dest / name, "JPEG", quality=92)
-            log("purchase" if d.decision == "purchased" else "return",
-                store=c["store"], order_date=c["date"], item=c["id"])
+            log("purchase" if d.decision == "purchased" else "return", store=c["store"], order_date=c["date"],
+                item=c["id"], reason=d.decision.split("_", 1)[1] if d.decision.startswith("returned") else None)
         decisions[d.id] = d.decision
         save(DECISIONS, decisions)
         return {"ok": True}
@@ -291,6 +295,10 @@ def card(c):
     buttons = "".join(
         f'<button data-d="{d}" class="{"suggest" if d == suggested else ""}">{label}</button>'
         for d, label in (("purchased", "Bought it"), ("returned", "Returned it"), ("skip", "Not a product")))
+    buttons += ('<div class="why" hidden><span>Why?</span>'
+                '<button data-d="returned_style">Not my style</button>'
+                '<button data-d="returned_fit">Fit or quality</button>'
+                '<button data-d="returned_need">Didn’t need it</button></div>')
     return f"""<article class="card" data-id="{c['id']}">
   <img src="{escape(c['image'])}" alt="" loading="lazy" referrerpolicy="no-referrer">
   <p class="meta">{escape(c['store'])} · {escape(c['date'] or '')} · <span class="kind">{kind}</span></p>
@@ -317,7 +325,11 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
   button.suggest { border-color:var(--ink); }
   button:hover { border-color:var(--ink); } button:focus-visible { outline:2px solid #4a7bd0; outline-offset:2px; }
   .card.purchased button[data-d=purchased] { background:var(--keep); border-color:var(--keep); color:#fff; }
-  .card.returned button[data-d=returned] { background:var(--back); border-color:var(--back); color:#fff; }
+  .card[class*=returned_] button[data-d=returned] { background:var(--back); border-color:var(--back); color:#fff; }
+  .card.returned_style button[data-d=returned_style], .card.returned_fit button[data-d=returned_fit],
+  .card.returned_need button[data-d=returned_need] { border-color:var(--back); color:var(--back); font-weight:600; }
+  .why { display:flex; flex-wrap:wrap; gap:6px; align-items:center; width:100%; margin-top:2px; font-size:12px; color:var(--muted); }
+  .why[hidden] { display:none; }
   .card.skip { opacity:.35; }
   .msg { font-size:12px; color:var(--back); margin:6px 0 0; min-height:1em; }
 </style></head><body><main>
@@ -346,6 +358,9 @@ async function viaPage(url) {
 }
 document.querySelectorAll(".card").forEach(card => card.addEventListener("click", async e => {
   const b = e.target.closest("button"); if (!b) return;
+  const why = card.querySelector(".why");
+  if (b.dataset.d === "returned") { why.hidden = false; return; }  // ask why before saving
+  if (!b.dataset.d.startsWith("returned_")) why.hidden = true;
   const msg = card.querySelector(".msg"); msg.textContent = "Saving…";
   try {
     let data = null;
@@ -356,7 +371,8 @@ document.querySelectorAll(".card").forEach(card => card.addEventListener("click"
     const r = await fetch("/decide", { method:"POST", headers:{ "Content-Type":"application/json" },
       body: JSON.stringify({ id: card.dataset.id, decision: b.dataset.d, data }) });
     if (!r.ok) throw new Error((await r.json()).detail);
-    card.classList.remove("purchased","returned","skip"); card.classList.add(b.dataset.d); msg.textContent = "";
+    card.classList.remove("purchased","returned_style","returned_fit","returned_need","skip");
+    card.classList.add(b.dataset.d); msg.textContent = "";
   } catch (err) { msg.textContent = err.message; }
 }));
 </script></body></html>"""

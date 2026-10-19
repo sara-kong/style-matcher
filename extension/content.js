@@ -24,7 +24,9 @@
   const BATCH_MAX = 40;
 
   const scores = new Map();   // url -> score
-  const labels = new Map();   // url -> "like" | "dislike" | "maybe"
+  const labels = new Map();   // url -> "like" | "dislike" | "maybe" | "owned"
+  const nearest = new Map();  // url -> similarity to the closest thing you own (0-1)
+  let ownT = 0.9, similarT = 0.82;
   const tracked = new Map();  // <img> -> { url, tag }
   const dimmed = new Map();   // <img> -> original inline styles
   const queue = new Set();
@@ -74,6 +76,9 @@
     }
     .tag.keep { background: var(--keep); color: #fff; border-color: transparent; }
     .tag.done { font-weight: 500; }
+    .tag.owned { background: #ece8e1; color: var(--ink); border-color: rgba(43,42,51,.28); }
+    .note { font-weight: 500; font-size: 11px; opacity: .85; padding-left: 6px;
+            border-left: 1px solid currentColor; }
     .actions { display: none; gap: 2px; margin-left: 2px; }
     .tag:hover .actions, .tag:focus-within .actions { display: flex; }
     button {
@@ -145,7 +150,10 @@
       }
       serverDown = false;
       cutoff = res.data.cutoff;
+      ownT = res.data.own_threshold ?? ownT;
+      similarT = res.data.similar_threshold ?? similarT;
       for (const [u, s] of Object.entries(res.data.scores)) scores.set(u, s);
+      for (const [u, s] of Object.entries(res.data.nearest || {})) nearest.set(u, s);
       for (const img of tracked.keys()) render(img);
       if (queue.size) flushTimer = setTimeout(flush, 50);
     });
@@ -156,7 +164,10 @@
     const t = tracked.get(img);
     if (!t || !scores.has(t.url)) return;
     const s = scores.get(t.url);
-    const keep = s >= cutoff;
+    const near = nearest.get(t.url);
+    const owned = labels.get(t.url) === "owned" || (near != null && near >= ownT);
+    const similar = !owned && near != null && near >= similarT;
+    const keep = s >= cutoff && !owned;  // never highlight something you already own
     const label = labels.get(t.url);
 
     if (!t.tag) {
@@ -166,15 +177,24 @@
     }
     t.tag.classList.toggle("keep", keep);
     t.tag.classList.toggle("done", !!label);
-    t.tag.title = `Predicted chance you'd like this: ${Math.round(s * 100)}%`;
+    t.tag.classList.toggle("owned", owned);
+    t.tag.title = `Predicted chance you'd like this: ${Math.round(s * 100)}%` +
+      (near != null ? `\nClosest thing you own: ${Math.round(near * 100)}% similar` : "");
     t.tag.innerHTML = "";
     const score = document.createElement("span");
-    score.textContent = label ? { like: "Liked", dislike: "Disliked", maybe: "Maybe" }[label] : Math.round(s * 100);
+    score.textContent = label ? { like: "Liked", dislike: "Disliked", maybe: "Maybe", owned: "You own this" }[label]
+      : owned ? "You own this" : Math.round(s * 100);
     t.tag.appendChild(score);
+    if (similar && !label) {
+      const note = document.createElement("span");
+      note.className = "note";
+      note.textContent = "Similar to yours";
+      t.tag.appendChild(note);
+    }
 
     const actions = document.createElement("span");
     actions.className = "actions";
-    for (const [value, text] of [["like", "Like"], ["maybe", "Maybe"], ["dislike", "Dislike"]]) {
+    for (const [value, text] of [["like", "Like"], ["maybe", "Maybe"], ["dislike", "Dislike"], ["owned", "I own this"]]) {
       const b = document.createElement("button");
       b.textContent = text;
       b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); sendLabel(img, value); });
