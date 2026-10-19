@@ -45,7 +45,7 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 CACHE_FILE = ROOT / ".embedding_cache.joblib"
 LOG_FILE = ROOT / "logs" / "events.jsonl"
 LABELS = ("like", "dislike", "maybe")
-STRONG_WEIGHT = 3.0  # how much a purchase or a return counts compared with a like or dislike
+STRONG_WEIGHT = 1.0  # how much a purchase or a return counts compared with a like or dislike
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                          "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
 
