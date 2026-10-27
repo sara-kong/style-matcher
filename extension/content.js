@@ -208,8 +208,8 @@
     t.tag.appendChild(actions);
 
     // Fade images below the cutoff; outline the ones worth a look.
-    if (!dimmed.has(img)) dimmed.set(img, { opacity: img.style.opacity, outline: img.style.outline, offset: img.style.outlineOffset });
-    img.style.opacity = keep ? "" : "0.35";
+    if (!dimmed.has(img)) dimmed.set(img, { filter: img.style.filter, outline: img.style.outline, offset: img.style.outlineOffset });
+    img.style.filter = keep ? dimmed.get(img).filter: "grayscale(0.7) brightness(1.2) contrast (0.8)";
     img.style.outline = keep ? "3px solid #b89393" : "";
     img.style.outlineOffset = keep ? "-3px" : "";
     place();
@@ -250,7 +250,7 @@
   function clearAll() {
     for (const [img, t] of tracked) if (t.tag) t.tag.remove();
     for (const [img, orig] of dimmed) {
-      img.style.opacity = orig.opacity; img.style.outline = orig.outline; img.style.outlineOffset = orig.offset;
+      img.style.filter = orig.filter; img.style.outline = orig.outline; img.style.outlineOffset = orig.offset;
     }
     tracked.clear(); dimmed.clear(); queue.clear();
   }

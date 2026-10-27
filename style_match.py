@@ -1,15 +1,3 @@
-"""
-style_match.py — Steps 4 & 5: compare CLIP vs FashionCLIP, test cropping, test text queries.
-
-Folder layout (next to this script):
-  style/              your Pinterest images
-  style_cropped/      (optional) the same images, cropped to just the clothing
-  catalog/like/       catalog images you'd actually wear
-  catalog/dislike/    catalog images you wouldn't
-
-Run:   python style_match.py
-Then:  open report.html
-"""
 import html
 from pathlib import Path
 from urllib.parse import quote
