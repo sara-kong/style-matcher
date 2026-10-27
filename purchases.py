@@ -1,20 +1,9 @@
-"""
-purchases.py — finds your clothing orders and returns in Gmail and adds them to your taste data.
-
-1. Searches Gmail (read-only) for order, receipt, shipping and return emails from your stores.
-2. Pulls the product photos out of those emails.
-3. Opens a review page where you confirm each item: Bought it / Returned it / Not a product.
-4. Confirmed items are saved to catalog/purchased or catalog/returned. The taste model treats
-   them as extra-strong yeses and nos the next time you retrain.
-
-Only item photos and a few details are kept, never the emails themselves.
-Run:  python purchases.py          (press Ctrl+C when you're done reviewing)
-"""
 import hashlib
 import io
 import json
 import re
 import sys
+import time
 import webbrowser
 from base64 import b64decode, urlsafe_b64decode
 from datetime import datetime, timezone
@@ -38,6 +27,12 @@ STORES = {
     "Aritzia": ["aritzia"],
     "With Jean": ["withjean"],
     "Guizio": ["guizio", "danielleguizio"],
+}
+# Stores that run on Shopify: receipts list items by name, so they can be matched to the store's
+# public catalog (store.com/products.json) to find the product photo.
+SHOPIFY = {
+    "With Jean": "https://withjean.com",
+    "Guizio": "https://danielleguiziony.com",
 }
 SUBJECT_WORDS = "order OR confirmation OR receipt OR purchase OR shipped OR return OR refund OR exchange"
 LOOKBACK = "3y"
@@ -168,6 +163,97 @@ def product_images(html, store_name=None):
     return found
 
 
+def text_body(payload):
+    """The email's plain-text part (or its HTML converted to text), as non-empty lines."""
+    def find(p, mime):
+        if p.get("mimeType") == mime and p.get("body", {}).get("data"):
+            return urlsafe_b64decode(p["body"]["data"]).decode("utf-8", errors="replace")
+        for part in p.get("parts", []) or []:
+            got = find(part, mime)
+            if got:
+                return got
+    text = find(payload, "text/plain")
+    if not text:
+        html = find(payload, "text/html")
+        text = BeautifulSoup(html, "html.parser").get_text("\n") if html else ""
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
+SHOPIFY_SIZE = re.compile(r"_(?:pico|icon|thumb|small|compact|medium|large|grande|\d+x\d*)(?:_crop_\w+|_cropped)?(?=\.\w+(?:\?|$))")
+
+
+def full_size(src):
+    """Shopify email images are small thumbnails (…_compact_cropped.jpg); dropping the suffix
+    asks Shopify's image server for the full-size original."""
+    return SHOPIFY_SIZE.sub("", src) if "cdn.shopify.com" in src else src
+
+
+ITEM_LINE = re.compile(r"^(.+?)\s*[×x]\s*(\d+)$")  # Shopify receipts: "Ara Top × 1"
+
+
+def receipt_items(lines):
+    """Item name, quantity and variant ("White / XS") from a Shopify-style receipt."""
+    items = []
+    for i, line in enumerate(lines):
+        m = ITEM_LINE.match(line)
+        if not m:
+            continue
+        variant = lines[i + 1] if i + 1 < len(lines) and "/" in lines[i + 1] and "$" not in lines[i + 1] else ""
+        items.append({"name": m.group(1).strip(), "qty": int(m.group(2)), "variant": variant})
+    return items
+
+
+_catalogs = {}
+
+
+def catalog(store):
+    """A Shopify store's products (fetched once per run, a few pages at most)."""
+    if store not in _catalogs:
+        products, base = [], SHOPIFY[store]
+        for page in range(1, 5):
+            for attempt in range(3):
+                r = requests.get(f"{base}/products.json?limit=250&page={page}", headers=HEADERS, timeout=20)
+                if r.status_code != 429:
+                    break
+                time.sleep(5 * (attempt + 1))
+            r.raise_for_status()
+            batch = r.json().get("products", [])
+            if not batch:
+                break
+            products += batch
+            time.sleep(1)
+        _catalogs[store] = products
+    return _catalogs[store]
+
+
+def norm(text):
+    return re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
+
+
+def match_product(store, item):
+    """The catalog photo for a receipt item: exact name first, then a close match, preferring the
+    photo of the variant bought (e.g. the White one)."""
+    products = catalog(store)
+    name = norm(item["name"])
+    words = set(name.split())
+    # Exact title first; otherwise the shortest title that contains the name or all of its words.
+    product = next((p for p in products if norm(p["title"]) == name), None) or min(
+        (p for p in products if name in norm(p["title"]) or norm(p["title"]) in name
+         or words <= set(norm(p["title"]).split())),
+        key=lambda p: len(p["title"]), default=None)
+    if not product or not product.get("images"):
+        return None
+    color = norm(item["variant"].split("/")[0]) if item["variant"] else ""
+    image = product["images"][0]
+    if color:
+        for v in product.get("variants", []):
+            if color in norm(v.get("title", "")) and v.get("featured_image"):
+                image = next((im for im in product["images"] if im["id"] == v["featured_image"]["id"]), image)
+                break
+    return {"image": image["src"], "title": f"{product['title']} — {item['variant']}".strip(" —"),
+            "link": f"{SHOPIFY[store]}/products/{product['handle']}"}
+
+
 def scan():
     service = gmail()
     candidates = {c["id"]: c for c in load(CANDIDATES, [])}
@@ -175,7 +261,7 @@ def scan():
     new_ids = [i for i in search(service) if i not in seen]
     print(f"Found {len(new_ids)} new order/return emails to read.")
 
-    per_store_emails, src_counts, fresh = {}, {}, []
+    per_store_emails, src_counts, fresh, unmatched = {}, {}, [], []
     for n, mid in enumerate(new_ids, 1):
         msg = service.users().messages().get(userId="me", id=mid, format="full").execute()
         headers = {h["name"].lower(): h["value"] for h in msg["payload"].get("headers", [])}
@@ -189,18 +275,41 @@ def scan():
         except Exception:
             when = None
         per_store_emails[store] = per_store_emails.get(store, 0) + 1
-        for item in product_images(html, store):
+        found = product_images(html, store)
+        if found and store in SHOPIFY:
+            # Name the photos from the receipt when it lists the same number of items, in order.
+            named = receipt_items(text_body(msg["payload"]))
+            if len(named) == len(found):
+                for item, r in zip(found, named):
+                    item["title"] = item["title"] or f"{r['name']} — {r['variant']}".strip(" —")
+        for item in found:
             key = (store, item["image"].split("?")[0])
             src_counts[key] = src_counts.get(key, 0) + 1
-            fresh.append(dict(item, id=image_id(item["image"]), store=store, kind=kind, date=when,
-                              subject=headers.get("subject", "")[:120]))
+            fresh.append(dict(item, id=image_id(item["image"]), image=full_size(item["image"]), store=store,
+                              kind=kind, date=when, subject=headers.get("subject", "")[:120]))
+        if not found and store in SHOPIFY:
+            # No photos in the email: read the item names from the receipt and find them in the
+            # store's catalog instead.
+            for item in receipt_items(text_body(msg["payload"])):
+                try:
+                    match = match_product(store, item)
+                except Exception as e:
+                    print(f"  {store}: couldn't read the catalog ({e}); try again later")
+                    seen.discard(mid)  # retry this email next run
+                    break
+                if match:
+                    fresh.append(dict(match, id=image_id(match["image"]), store=store, kind=kind, date=when,
+                                      subject=headers.get("subject", "")[:120], source="receipt"))
+                    print(f"  matched from receipt: {store} · {match['title']}")
+                else:
+                    unmatched.append(f"{store} · {item['name']} {item['variant']}".strip())
         if n % 20 == 0:
             print(f"  read {n}/{len(new_ids)}")
 
     added = 0
     for c in fresh:
         # An image that shows up in most of a store's emails is part of the layout, not a product.
-        total, count = per_store_emails[c["store"]], src_counts[(c["store"], c["image"].split("?")[0])]
+        total, count = per_store_emails[c["store"]], src_counts.get((c["store"], c["image"].split("?")[0]), 0)
         if count >= 3 and count / total > 0.5:
             continue
         old = candidates.get(c["id"])
@@ -211,6 +320,8 @@ def scan():
     save(CANDIDATES, sorted(candidates.values(), key=lambda c: c["date"] or "", reverse=True))
     save(SEEN, sorted(seen))
     print(f"Added {added} new possible items.")
+    for u in unmatched:
+        print(f"  Couldn't find in the store's catalog: {u} — use 'I own this' on its product page")
 
 
 # ---------------------------------------------------------------- review page
@@ -303,6 +414,7 @@ def card(c):
   <img src="{escape(c['image'])}" alt="" loading="lazy" referrerpolicy="no-referrer">
   <p class="meta">{escape(c['store'])} · {escape(c['date'] or '')} · <span class="kind">{kind}</span></p>
   <h2>{escape(c['title'] or c['subject'])}</h2>
+  {f'<p class="meta">Matched from the receipt · <a href="{escape(c["link"])}" target="_blank" rel="noopener">check the product</a></p>' if c.get("source") == "receipt" else ''}
   <div class="actions">{buttons}</div>
   <p class="msg" role="status"></p>
 </article>"""
